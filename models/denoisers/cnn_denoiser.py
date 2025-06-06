@@ -1,11 +1,15 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
-import os
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
+from scripts.interactive_modulation import generate_modulated_signal
+from scripts.visualization import plot_signals, plot_spectra, compute_snr
 
 class CNNDenoiser(nn.Module):
     def __init__(self):
@@ -13,7 +17,7 @@ class CNNDenoiser(nn.Module):
         
         # Энкодер (уменьшаем количество фильтров)
         self.encoder = nn.Sequential(
-            nn.Conv1d(2, 32, kernel_size=3, padding=1),
+            nn.Conv1d(1, 32, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv1d(32, 64, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -27,7 +31,7 @@ class CNNDenoiser(nn.Module):
             nn.ReLU(),
             nn.ConvTranspose1d(64, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.ConvTranspose1d(32, 2, kernel_size=3, padding=1)
+            nn.ConvTranspose1d(32, 1, kernel_size=3, padding=1)
         )
         
     def forward(self, x):
@@ -40,6 +44,16 @@ def load_dataset(dataset_path):
     data = np.load(dataset_path)
     x_clean = torch.FloatTensor(data['x_clean'])
     x_noisy = torch.FloatTensor(data['x_noisy'])
+    # Проверяем размерности и добавляем канал если нужно
+    if x_clean.ndim == 2:
+        x_clean = x_clean.unsqueeze(1)
+    if x_noisy.ndim == 2:
+        x_noisy = x_noisy.unsqueeze(1)
+    # Приводим к одноканальному формату, если каналов больше одного
+    if x_clean.shape[1] > 1:
+        x_clean = x_clean[:, :1, :]
+    if x_noisy.shape[1] > 1:
+        x_noisy = x_noisy[:, :1, :]
     return x_clean, x_noisy
 
 def create_dataloader(x_clean, x_noisy, batch_size=32):
@@ -140,48 +154,97 @@ def train_model(model, train_loader, val_loader, device, epochs=30):
     plt.savefig('cnn_denoiser_training.png')
     plt.close()
 
+def interactive_test():
+    DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    WEIGHTS_PATH = "weights/cnn_denoiser.pth"
+    # Загрузка модели
+    model = CNNDenoiser().to(DEVICE)
+    if not os.path.exists(WEIGHTS_PATH):
+        print("Веса не найдены! Сначала обучите модель.")
+        return
+    checkpoint = torch.load(WEIGHTS_PATH, map_location=DEVICE)
+    try:
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+    except Exception as e:
+        print(f"Ошибка загрузки весов: {e}\nПроверьте, что файл содержит только state_dict или dict с ключом 'model_state_dict'.")
+        return
+    model.eval()
+    # Меню выбора модуляции и SNR
+    mod_types = ['AM', 'FM', 'PM', 'ASK', 'FSK', 'BPSK', 'QPSK']
+    print("\nВыберите тип модуляции:")
+    for i, m in enumerate(mod_types, 1):
+        print(f"{i}) {m}")
+    while True:
+        mod_choice = input("Введите номер модуляции: ").strip()
+        if mod_choice in map(str, range(1, 8)):
+            mod_type = mod_types[int(mod_choice)-1]
+            break
+        print("Неверный выбор.")
+    snr_levels = [-10, -5, 0, 5, 10, 15, 20, 25, 30]
+    print("\nВыберите уровень шума (SNR дБ):")
+    for i, snr in enumerate(snr_levels, 1):
+        print(f"{i}) {snr} дБ")
+    while True:
+        snr_choice = input("Введите номер уровня шума: ").strip()
+        if snr_choice in map(str, range(1, 10)):
+            snr = snr_levels[int(snr_choice)-1]
+            break
+        print("Неверный выбор.")
+    # Генерация сигнала
+    message, clean_signal, noisy_signal = generate_modulated_signal(mod_type, snr)
+    noisy_tensor = torch.FloatTensor(noisy_signal).unsqueeze(0).unsqueeze(0).to(DEVICE)
+    with torch.no_grad():
+        denoised = model(noisy_tensor).cpu().squeeze().numpy()
+    # SNR
+    snr_noisy = compute_snr(clean_signal, noisy_signal)
+    snr_denoised = compute_snr(clean_signal, denoised)
+    print(f"\nSNR зашумленного: {snr_noisy:.2f} дБ | SNR после очистки: {snr_denoised:.2f} дБ")
+    # Графики
+    plot_signals(message, clean_signal, noisy_signal, denoised, denoised)
+    plot_spectra(message, clean_signal, noisy_signal, denoised, denoised)
+
 def main():
+    print("1) Проверить денойзер на зашумленном сигнале")
+    print("2) Переобучить модель")
+    choice = input("Выберите режим (1/2): ").strip()
+    if choice == '1':
+        interactive_test()
+        return
     # Параметры
     DATASET_PATH = "data/cnn_dataset.npz"
     WEIGHTS_PATH = "weights/cnn_denoiser.pth"
     DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     BATCH_SIZE = 32
-    EPOCHS = 30
-    
+    EPOCHS = 20
     print("Модель: CNN Denoiser")
     print(f"Using device: {DEVICE}")
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
-    
     # Создание модели
     model = CNNDenoiser().to(DEVICE)
-    
     # Проверка существования весов
     if os.path.exists(WEIGHTS_PATH):
         response = input("Файл весов найден. Переобучить модель? (y/n): ")
         if response.lower() != 'y':
             print("Complete")
             return
-    
     # Загрузка данных
     x_clean, x_noisy = load_dataset(DATASET_PATH)
-    
     # Разделение на train и validation
     x_clean_train, x_clean_val, x_noisy_train, x_noisy_val = train_test_split(
         x_clean, x_noisy, test_size=0.2, random_state=42
     )
-    
     # Создание DataLoader'ов
     train_loader = create_dataloader(x_clean_train, x_noisy_train, BATCH_SIZE)
     val_loader = create_dataloader(x_clean_val, x_noisy_val, BATCH_SIZE)
-    
     # Очищаем кэш CUDA перед обучением
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    
     # Обучение модели
     train_model(model, train_loader, val_loader, DEVICE, epochs=EPOCHS)
-    
     print("Complete")
 
 if __name__ == "__main__":

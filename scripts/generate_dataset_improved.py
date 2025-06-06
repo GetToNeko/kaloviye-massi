@@ -9,6 +9,7 @@ SAMPLE_LENGTH = 512
 SAMPLING_RATE = 1000  # Hz
 SNR_RANGE = (-10, 20)  # dB
 NYQUIST_FREQ = SAMPLING_RATE / 2
+DIGITAL_BITS = 256  # Количество бит для цифровых модуляций
 
 # Типы модуляции и их метки
 LABEL_MAP = {
@@ -48,12 +49,12 @@ class NoiseGenerator:
         """Частотное дрожание"""
         drift = max_drift * np.cumsum(np.random.normal(0, 0.1, len(t)))
         drift = drift - np.mean(drift)  # центрируем дрейф
-        return signal * np.exp(1j * 2 * np.pi * drift)
+        return signal * np.cos(2 * np.pi * drift)  # Теперь применяем к реальному сигналу
 
 class SignalGenerator:
     @staticmethod
-    def generate_message(t, mode='random'):
-        """Генерация модулирующего сигнала"""
+    def generate_analog_message(t, mode='random'):
+        """Генерация аналогового модулирующего сигнала"""
         if mode == 'sin':
             return np.sin(2 * np.pi * 100 * t)
         elif mode == 'random_sin':
@@ -63,83 +64,97 @@ class SignalGenerator:
             amps = np.random.uniform(0.5, 1.0, size=n_components)
             return sum(a * np.sin(2 * np.pi * f * t + p) 
                       for f, p, a in zip(freqs, phases, amps))
-        elif mode == 'nrz':
-            # Non-Return-to-Zero кодирование
-            symbol_rate = 10  # символов в сигнале
-            symbols = np.random.choice([-1, 1], size=symbol_rate)
-            return np.repeat(symbols, len(t) // symbol_rate)
         else:
             raise ValueError(f"Unknown message mode: {mode}")
+    
+    @staticmethod
+    def generate_digital_message(length=DIGITAL_BITS):
+        """Генерация цифрового сообщения"""
+        return np.random.choice([-1, 1], size=length)
     
     @staticmethod
     def generate_carrier(t, freq=None):
         """Генерация несущего сигнала"""
         if freq is None:
             freq = np.random.uniform(NYQUIST_FREQ/10, NYQUIST_FREQ/3)
-        return np.exp(1j * 2 * np.pi * freq * t)
+        return np.cos(2 * np.pi * freq * t)  # Теперь возвращаем реальный сигнал
 
-def generate_modulation(t, mod_type, message_mode='random_sin'):
+def generate_modulation(t, mod_type):
     """Генерация модулированного сигнала
     
     Args:
         t: временная ось
         mod_type: тип модуляции (AM, FM, PM, ASK, FSK, BPSK, QPSK)
-        message_mode: режим генерации сообщения:
-            - 'sin': простая синусоида
-            - 'random_sin': случайная комбинация синусоид
-            - 'nrz': Non-Return-to-Zero кодирование
     """
-    message = SignalGenerator.generate_message(t, mode=message_mode)
     carrier_freq = np.random.uniform(NYQUIST_FREQ/10, NYQUIST_FREQ/3)
     carrier = SignalGenerator.generate_carrier(t, carrier_freq)
     
-    if mod_type == 'AM':
-        modulation_index = np.random.uniform(0.3, 0.9)
-        signal = (1 + modulation_index * message) * carrier
+    if mod_type in ['AM', 'FM', 'PM']:  # Аналоговые модуляции
+        message = SignalGenerator.generate_analog_message(t, mode='random_sin')
+        
+        if mod_type == 'AM':
+            modulation_index = np.random.uniform(0.3, 0.9)
+            signal = (1 + modulation_index * message) * carrier
+        
+        elif mod_type == 'FM':
+            modulation_index = np.random.uniform(0.5, 2.0)
+            phase = np.cumsum(message) * modulation_index
+            signal = np.cos(2 * np.pi * carrier_freq * t + phase)
+        
+        elif mod_type == 'PM':
+            modulation_index = np.random.uniform(0.5, 2.0)
+            signal = np.cos(2 * np.pi * carrier_freq * t + modulation_index * message)
     
-    elif mod_type == 'FM':
-        modulation_index = np.random.uniform(0.5, 2.0)
-        phase = np.cumsum(message) * modulation_index
-        signal = carrier * np.exp(1j * phase)
-    
-    elif mod_type == 'PM':
-        modulation_index = np.random.uniform(0.5, 2.0)
-        signal = carrier * np.exp(1j * modulation_index * message)
-    
-    elif mod_type == 'ASK':
-        modulation_index = np.random.uniform(0.3, 0.9)
-        signal = (1 + modulation_index * message) * carrier
-    
-    elif mod_type == 'FSK':
-        deviation = np.random.uniform(10, 50)
-        signal = np.exp(1j * 2 * np.pi * (carrier_freq + deviation * message) * t)
-    
-    elif mod_type == 'BPSK':
-        signal = carrier * np.sign(message)
-    
-    elif mod_type == 'QPSK':
-        message2 = SignalGenerator.generate_message(t, mode=message_mode)
-        signal = carrier * (np.sign(message) + 1j * np.sign(message2)) / np.sqrt(2)
-    
-    else:
-        raise ValueError(f"Unknown modulation type: {mod_type}")
+    else:  # Цифровые модуляции
+        bits = SignalGenerator.generate_digital_message()
+        # Интерполируем биты до нужной длины сигнала
+        message = np.repeat(bits, len(t) // len(bits))
+        
+        if mod_type == 'ASK':
+            modulation_index = np.random.uniform(0.3, 0.9)
+            signal = (1 + modulation_index * message) * carrier
+        
+        elif mod_type == 'FSK':
+            deviation = np.random.uniform(10, 50)
+            signal = np.cos(2 * np.pi * (carrier_freq + deviation * message) * t)
+        
+        elif mod_type == 'BPSK':
+            signal = message * carrier
+        
+        elif mod_type == 'QPSK':
+            # Для QPSK генерируем два потока битов и модулируем их со сдвигом 90°
+            bits2 = SignalGenerator.generate_digital_message()
+            message2 = np.repeat(bits2, len(t) // len(bits2))
+            signal = (message * carrier + message2 * np.cos(2 * np.pi * carrier_freq * t + np.pi/2)) / np.sqrt(2)
     
     return signal
 
 def add_noise(signal, snr_db):
-    """Добавление комбинации шумов"""
+    """Добавление комбинации шумов с контролируемым SNR"""
+    # Базовый AWGN с заданным SNR
     noisy = NoiseGenerator.awgn(signal, snr_db)
     
-    # Случайно добавляем другие типы шума
+    # Случайно добавляем другие типы шума с меньшей интенсивностью
     if np.random.random() < 0.3:  # 30% шанс импульсного шума
-        noisy = NoiseGenerator.impulse_noise(noisy)
+        noisy = NoiseGenerator.impulse_noise(noisy, prob=0.005, amplitude=2.0)
     
     if np.random.random() < 0.3:  # 30% шанс мультипликативного шума
-        noisy = NoiseGenerator.multiplicative_noise(noisy)
+        noisy = NoiseGenerator.multiplicative_noise(noisy, intensity=0.05)
     
     if np.random.random() < 0.2:  # 20% шанс частотного дрожания
         t = np.linspace(0, SAMPLE_LENGTH/SAMPLING_RATE, SAMPLE_LENGTH)
-        noisy = NoiseGenerator.frequency_jitter(noisy, t)
+        noisy = NoiseGenerator.frequency_jitter(noisy, t, max_drift=0.005)
+    
+    # Контроль уровня шума после всех искажений
+    signal_power = np.mean(np.abs(signal)**2)
+    noise = noisy - signal
+    noise_power = np.mean(np.abs(noise)**2)
+    current_snr = 10 * np.log10(signal_power / noise_power)
+    
+    # Корректировка уровня шума для достижения целевого SNR
+    if current_snr != snr_db:
+        scale = np.sqrt(signal_power / (noise_power * 10**(snr_db/10)))
+        noisy = signal + scale * noise
     
     return noisy
 
@@ -147,8 +162,8 @@ def generate_batch(args):
     """Генерация батча сигналов"""
     mod_type, n_samples, t = args
     
-    x_clean = np.zeros((n_samples, SAMPLE_LENGTH), dtype=np.complex64)
-    x_noisy = np.zeros((n_samples, SAMPLE_LENGTH), dtype=np.complex64)
+    x_clean = np.zeros((n_samples, SAMPLE_LENGTH), dtype=np.float32)
+    x_noisy = np.zeros((n_samples, SAMPLE_LENGTH), dtype=np.float32)
     params = []
     
     for i in range(n_samples):
@@ -156,13 +171,14 @@ def generate_batch(args):
         signal = generate_modulation(t, mod_type)
         x_clean[i] = signal
         
-        # Добавление шума
+        # Добавление шума с контролируемым SNR
         snr = np.random.uniform(*SNR_RANGE)
-        x_noisy[i] = add_noise(signal, snr)
+        noisy_signal = add_noise(signal, snr)
+        x_noisy[i] = noisy_signal
         
         # Сохранение параметров
         params.append({
-            'snr': float(snr),  # преобразуем в обычное число для JSON
+            'snr': float(snr),
             'mod_type': mod_type,
             'label': LABEL_MAP[mod_type]
         })
@@ -189,8 +205,8 @@ def generate_dataset(n_samples_per_class, save_path, batch_size=1000):
     print(f"Всего сэмплов: {total_samples}")
     
     # Подготовка массивов для данных
-    x_clean = np.zeros((total_samples, 2, SAMPLE_LENGTH), dtype=np.float32)
-    x_noisy = np.zeros((total_samples, 2, SAMPLE_LENGTH), dtype=np.float32)
+    x_clean = np.zeros((total_samples, SAMPLE_LENGTH), dtype=np.float32)
+    x_noisy = np.zeros((total_samples, SAMPLE_LENGTH), dtype=np.float32)
     labels = np.zeros(total_samples, dtype=np.int32)
     all_params = []
     
@@ -198,64 +214,46 @@ def generate_dataset(n_samples_per_class, save_path, batch_size=1000):
     current_idx = 0
     for mod_type in tqdm(mod_types, desc="Классы"):
         remaining_samples = n_samples_per_class
+        label = LABEL_MAP[mod_type]
         
         while remaining_samples > 0:
-            batch = min(batch_size, remaining_samples)
-            x_clean_batch, x_noisy_batch, params = generate_batch((mod_type, batch, t))
+            batch_size = min(batch_size, remaining_samples)
+            x_clean_batch, x_noisy_batch, params_batch = generate_batch((mod_type, batch_size, t))
             
-            # Разделяем комплексные числа на реальную и мнимую части
-            x_clean[current_idx:current_idx+batch, 0] = np.real(x_clean_batch)
-            x_clean[current_idx:current_idx+batch, 1] = np.imag(x_clean_batch)
-            x_noisy[current_idx:current_idx+batch, 0] = np.real(x_noisy_batch)
-            x_noisy[current_idx:current_idx+batch, 1] = np.imag(x_noisy_batch)
-            labels[current_idx:current_idx+batch] = LABEL_MAP[mod_type]
+            # Сохранение результатов
+            end_idx = current_idx + batch_size
+            x_clean[current_idx:end_idx] = x_clean_batch
+            x_noisy[current_idx:end_idx] = x_noisy_batch
+            labels[current_idx:end_idx] = label
+            all_params.extend(params_batch)
             
-            all_params.extend(params)
-            
-            # Сохраняем промежуточные результаты каждые 5000 сэмплов
-            if current_idx > 0 and current_idx % 5000 == 0:
-                temp_save_path = save_dir / f'temp_dataset_{current_idx}.npz'
-                np.savez_compressed(
-                    temp_save_path,
-                    x_clean=x_clean[:current_idx],
-                    x_noisy=x_noisy[:current_idx],
-                    labels=labels[:current_idx]
-                )
-                # Сохраняем параметры
-                temp_params_path = save_dir / f'temp_params_{current_idx}.json'
-                with open(temp_params_path, 'w') as f:
-                    json.dump(all_params[:current_idx], f)
-            
-            current_idx += batch
-            remaining_samples -= batch
+            current_idx = end_idx
+            remaining_samples -= batch_size
     
-    # Сохраняем финальный датасет
-    metadata = {
-        'sample_length': SAMPLE_LENGTH,
-        'sampling_rate': SAMPLING_RATE,
-        'snr_range': SNR_RANGE,
-        'label_map': LABEL_MAP
-    }
+    # Нормализация данных
+    x_clean = (x_clean - x_clean.mean(axis=1, keepdims=True)) / (x_clean.std(axis=1, keepdims=True) + 1e-8)
+    x_noisy = (x_noisy - x_noisy.mean(axis=1, keepdims=True)) / (x_noisy.std(axis=1, keepdims=True) + 1e-8)
     
+    # Добавление размерности канала для совместимости с PyTorch
+    x_clean = np.expand_dims(x_clean, axis=1)  # Shape: (samples, 1, sequence_length)
+    x_noisy = np.expand_dims(x_noisy, axis=1)  # Shape: (samples, 1, sequence_length)
+    
+    # Сохранение датасета
     np.savez_compressed(
         save_path,
         x_clean=x_clean,
         x_noisy=x_noisy,
-        labels=labels,
-        metadata=json.dumps(metadata)
+        labels=labels
     )
     
-    # Сохраняем все параметры в отдельный файл
-    params_path = save_dir / 'signal_params.json'
+    # Сохранение параметров в отдельный JSON файл
+    params_path = save_path.with_suffix('.json')
     with open(params_path, 'w') as f:
-        json.dump(all_params, f)
+        json.dump(all_params, f, indent=2)
     
     print(f"\nДатасет сохранен в {save_path}")
     print(f"Параметры сохранены в {params_path}")
-    
-    # Удаляем временные файлы
-    for temp_file in save_dir.glob('temp_*'):
-        temp_file.unlink()
+    print(f"Форма данных: x_clean: {x_clean.shape}, x_noisy: {x_noisy.shape}, labels: {labels.shape}")
 
 def main():
     # Параметры генерации для двух датасетов

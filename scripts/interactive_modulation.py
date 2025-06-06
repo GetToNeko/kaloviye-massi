@@ -23,11 +23,15 @@ class ModulationGenerator:
         }
         
         self.snr_levels = {
-            '1': 0,
-            '2': 5,
-            '3': 10,
-            '4': 15,
-            '5': 20
+            '1': -10,
+            '2': -5,
+            '3': 0,
+            '4': 5,
+            '5': 10,
+            '6': 15,
+            '7': 20,
+            '8': 25,
+            '9': 30
         }
         
         self.current_mod_signal = None
@@ -58,18 +62,18 @@ class ModulationGenerator:
         # Генерация временной оси
         t = np.linspace(0, SAMPLE_LENGTH/SAMPLING_RATE, SAMPLE_LENGTH)
         
-        # Генерация модулированного сигнала
-        complex_signal = generate_modulation(t, mod_type)
-        
-        # Разделение на I/Q компоненты
-        self.current_mod_signal = np.array([np.real(complex_signal), np.imag(complex_signal)])
+        # Генерация модулированного сигнала (теперь одномерного)
+        self.current_mod_signal = generate_modulation(t, mod_type)
         
         # Добавление шума
-        noisy_complex = add_noise(complex_signal, snr)
-        self.current_noisy_signal = np.array([np.real(noisy_complex), np.imag(noisy_complex)])
+        self.current_noisy_signal = add_noise(self.current_mod_signal, snr)
         
         # Сохраняем модулирующий сигнал (для отображения)
-        self.current_message = SignalGenerator.generate_message(t, mode='random_sin')
+        if mod_type in ['AM', 'FM', 'PM']:
+            self.current_message = SignalGenerator.generate_analog_message(t, mode='random_sin')
+        else:
+            bits = SignalGenerator.generate_digital_message()
+            self.current_message = np.repeat(bits, len(t) // len(bits))
         
         self.current_mod_type = display_name
         return True
@@ -82,54 +86,44 @@ class ModulationGenerator:
         
         fig = plt.figure(figsize=(15, 12))
         
-        # График чистого сигнала
+        # График модулирующего сигнала
         plt.subplot(321)
-        plt.plot(self.current_mod_signal[0], label='I')
-        plt.plot(self.current_mod_signal[1], label='Q')
-        plt.title(f'Чистый сигнал ({self.current_mod_type})')
-        plt.legend()
+        plt.plot(self.current_message)
+        plt.title(f'Модулирующий сигнал ({self.current_mod_type})')
+        plt.grid(True)
+        
+        # График чистого модулированного сигнала
+        plt.subplot(322)
+        plt.plot(self.current_mod_signal)
+        plt.title('Модулированный сигнал')
         plt.grid(True)
         
         # График зашумленного сигнала
-        plt.subplot(322)
-        plt.plot(self.current_noisy_signal[0], label='I')
-        plt.plot(self.current_noisy_signal[1], label='Q')
-        plt.title('Зашумленный сигнал')
-        plt.legend()
-        plt.grid(True)
-        
-        # Констелляционная диаграмма чистого сигнала
         plt.subplot(323)
-        plt.scatter(self.current_mod_signal[0], self.current_mod_signal[1], 
-                   alpha=0.5, s=1)
-        plt.title('Констелляционная диаграмма (чистый)')
-        plt.xlabel('I')
-        plt.ylabel('Q')
+        plt.plot(self.current_noisy_signal)
+        plt.title('Зашумленный сигнал')
         plt.grid(True)
         
-        # Констелляционная диаграмма зашумленного сигнала
+        # Спектр модулирующего сигнала
         plt.subplot(324)
-        plt.scatter(self.current_noisy_signal[0], self.current_noisy_signal[1], 
-                   alpha=0.5, s=1)
-        plt.title('Констелляционная диаграмма (шум)')
-        plt.xlabel('I')
-        plt.ylabel('Q')
+        freq = np.fft.fftfreq(SAMPLE_LENGTH, 1/SAMPLING_RATE)
+        spectrum = np.abs(np.fft.fft(self.current_message))
+        plt.plot(freq[:SAMPLE_LENGTH//2], spectrum[:SAMPLE_LENGTH//2])
+        plt.title('Спектр модулирующего сигнала')
+        plt.xlabel('Частота (Гц)')
         plt.grid(True)
         
         # Спектр чистого сигнала
         plt.subplot(325)
-        clean_complex = self.current_mod_signal[0] + 1j * self.current_mod_signal[1]
-        freq = np.fft.fftfreq(SAMPLE_LENGTH, 1/SAMPLING_RATE)
-        spectrum = np.abs(np.fft.fft(clean_complex))
+        spectrum = np.abs(np.fft.fft(self.current_mod_signal))
         plt.plot(freq[:SAMPLE_LENGTH//2], spectrum[:SAMPLE_LENGTH//2])
-        plt.title('Спектр чистого сигнала')
+        plt.title('Спектр модулированного сигнала')
         plt.xlabel('Частота (Гц)')
         plt.grid(True)
         
         # Спектр зашумленного сигнала
         plt.subplot(326)
-        noisy_complex = self.current_noisy_signal[0] + 1j * self.current_noisy_signal[1]
-        spectrum = np.abs(np.fft.fft(noisy_complex))
+        spectrum = np.abs(np.fft.fft(self.current_noisy_signal))
         plt.plot(freq[:SAMPLE_LENGTH//2], spectrum[:SAMPLE_LENGTH//2])
         plt.title('Спектр зашумленного сигнала')
         plt.xlabel('Частота (Гц)')
@@ -173,27 +167,44 @@ class ModulationGenerator:
 def generate_modulated_signal(mod_type, snr):
     """Генерация модулированного сигнала для заданного типа модуляции и SNR
     
-    Args:
-        mod_type (str): Тип модуляции (AM, FM, PM, ASK, FSK, BPSK, QPSK)
-        snr (int): Отношение сигнал/шум в дБ
-        
     Returns:
-        tuple: (clean_signal, noisy_signal), где каждый сигнал имеет форму (2, SAMPLE_LENGTH)
+        tuple: (message, clean_signal, noisy_signal)
     """
     # Генерация временной оси
     t = np.linspace(0, SAMPLE_LENGTH/SAMPLING_RATE, SAMPLE_LENGTH)
-    
-    # Генерация комплексного сигнала
-    complex_signal = generate_modulation(t, mod_type)
-    
-    # Разделение на I/Q компоненты
-    clean_signal = np.array([np.real(complex_signal), np.imag(complex_signal)])
-    
+    # Генерация модулирующего сигнала и модулированного сигнала
+    carrier_freq = np.random.uniform(SAMPLING_RATE/20, SAMPLING_RATE/2/3)
+    carrier = SignalGenerator.generate_carrier(t, carrier_freq)
+    if mod_type in ['AM', 'FM', 'PM']:
+        message = SignalGenerator.generate_analog_message(t, mode='random_sin')
+        if mod_type == 'AM':
+            modulation_index = np.random.uniform(0.3, 0.9)
+            clean_signal = (1 + modulation_index * message) * carrier
+        elif mod_type == 'FM':
+            modulation_index = np.random.uniform(0.5, 2.0)
+            phase = np.cumsum(message) * modulation_index
+            clean_signal = np.cos(2 * np.pi * carrier_freq * t + phase)
+        elif mod_type == 'PM':
+            modulation_index = np.random.uniform(0.5, 2.0)
+            clean_signal = np.cos(2 * np.pi * carrier_freq * t + modulation_index * message)
+    else:
+        bits = SignalGenerator.generate_digital_message()
+        message = np.repeat(bits, len(t) // len(bits))
+        if mod_type == 'ASK':
+            modulation_index = np.random.uniform(0.3, 0.9)
+            clean_signal = (1 + modulation_index * message) * carrier
+        elif mod_type == 'FSK':
+            deviation = np.random.uniform(10, 50)
+            clean_signal = np.cos(2 * np.pi * (carrier_freq + deviation * message) * t)
+        elif mod_type == 'BPSK':
+            clean_signal = message * carrier
+        elif mod_type == 'QPSK':
+            bits2 = SignalGenerator.generate_digital_message()
+            message2 = np.repeat(bits2, len(t) // len(bits2))
+            clean_signal = (message * carrier + message2 * np.cos(2 * np.pi * carrier_freq * t + np.pi/2)) / np.sqrt(2)
     # Добавление шума
-    noisy_complex = add_noise(complex_signal, snr)
-    noisy_signal = np.array([np.real(noisy_complex), np.imag(noisy_complex)])
-    
-    return clean_signal, noisy_signal
+    noisy_signal = add_noise(clean_signal, snr)
+    return message, clean_signal, noisy_signal
 
 if __name__ == "__main__":
     generator = ModulationGenerator()

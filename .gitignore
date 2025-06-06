@@ -58,4 +58,27 @@ Thumbs.db
 
 # Temporary files
 *.swp
-*.swo 
+*.swo
+
+# Игнорировать веса моделей и датасеты
+weights/
+data/
+datasets/
+*.pth
+*.npz
+*.json
+
+# Игнорировать логи и результаты экспериментов
+logs/
+*.log
+*.png
+
+# Кэш Python
+__pycache__/
+*.pyc
+
+# Временные и служебные файлы
+*.bak
+*.tmp
+*.swp
+.DS_Store 
